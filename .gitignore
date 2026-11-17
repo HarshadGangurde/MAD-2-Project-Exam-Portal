@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.pyc
+venv/
+.venv/
+
+# Generated at run time (recreated automatically by run.py / the app)
+emp.db
+instance/
+exports/
+*.log
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Submission archives built by prepare_submission.ps1
+emp_*.zip

@@ -1,0 +1,119 @@
+openapi: 3.0.3
+info:
+  title: Examination Management Portal API
+  version: "2.0"
+  description: >-
+    All endpoints are under /api and (except register/login) need `Authorization: Bearer <JWT>`.
+    Errors are always JSON `{"error": "..."}` with 400 (bad input), 401/403 (auth), 404, 409 (conflict) or 429 (rate limit).
+servers:
+  - url: http://localhost:5000/api
+components:
+  securitySchemes:
+    bearer: { type: http, scheme: bearer, bearerFormat: JWT }
+  schemas:
+    Error: { type: object, properties: { error: { type: string } } }
+security:
+  - bearer: []
+paths:
+  /auth/register:
+    post: { summary: Student self-registration, security: [], requestBody: { content: { application/json: { schema: { type: object, required: [name, email, password], properties: { name: {type: string}, email: {type: string}, password: {type: string, minLength: 6}, phone: {type: string}, department: {type: string} } } } } }, responses: { "201": { description: Created }, "409": { description: Email exists } } }
+  /auth/login:
+    post: { summary: "Login (all roles). The web form always sends role (admin, examiner or student) and the API rejects with 403 an account that has a different role; API clients may omit role.", security: [], requestBody: { content: { application/json: { schema: { type: object, required: [email, password], properties: { role: {type: string, enum: [admin, examiner, student]}, email: {type: string}, password: {type: string} } } } } }, responses: { "200": { description: "{token, user}" }, "401": { description: Invalid credentials }, "403": { description: "Credentials are right but the account has another role than the one chosen, or the account is inactive" }, "429": { description: "Locked out after 10 FAILED attempts (per IP per minute, per account per 5 minutes); successful sign-ins are not counted" } } }
+  /auth/logout:
+    post: { summary: Revoke the current token, responses: { "200": { description: OK } } }
+  /auth/me:
+    get: { summary: Current user, responses: { "200": { description: OK } } }
+    put: { summary: Update own profile (name, phone, department, password), responses: { "200": { description: OK } } }
+  /courses:
+    get: { summary: List courses, responses: { "200": { description: OK } } }
+    post: { summary: Create course (admin), responses: { "201": { description: Created } } }
+  /courses/{id}:
+    parameters: [ { name: id, in: path, required: true, schema: { type: integer } } ]
+    put: { summary: Update course (admin), responses: { "200": { description: OK } } }
+    delete: { summary: Delete course (admin), responses: { "200": { description: OK } } }
+  /exams:
+    get:
+      summary: List/search examinations (role scoped, cached in Redis)
+      parameters:
+        - { name: q, in: query, schema: { type: string } }
+        - { name: type, in: query, schema: { type: string, enum: [Viva, Practical, Project Demo, Assessment] } }
+        - { name: status, in: query, schema: { type: string } }
+        - { name: course_id, in: query, schema: { type: integer } }
+      responses: { "200": { description: OK } }
+    post: { summary: Create examination (admin), responses: { "201": { description: Created } } }
+  /exams/{id}:
+    parameters: [ { name: id, in: path, required: true, schema: { type: integer } } ]
+    get: { summary: Get examination, responses: { "200": { description: OK } } }
+    put: { summary: Update examination incl. timelines (admin), responses: { "200": { description: OK } } }
+    delete: { summary: Delete examination without slots (admin), responses: { "200": { description: OK } } }
+  /exams/{id}/examiners:
+    put: { summary: "Replace the examiners of an examination (admin). Ids must be existing, active examiners; an examiner who still has open slots in the examination cannot be removed (reassign the slots first).", parameters: [ { name: id, in: path, required: true, schema: { type: integer } } ], requestBody: { content: { application/json: { schema: { type: object, properties: { examiner_ids: { type: array, items: { type: integer } } } } } } }, responses: { "200": { description: OK }, "409": { description: Examiner still has open slots } } }
+  /exams/{id}/status:
+    post: { summary: "Move an examination along its lifecycle (admin); an assigned examiner may only set Closed or Completed. Allowed moves: Draft>Slot Creation; Slot Creation>Draft/Booking Open/Closed; Booking Open>Slot Creation/Closed; Closed>Booking Open/Completed; Completed>Closed (until results are published). Each exam lists its valid moves in next_statuses. Completed needs every booked student evaluated and no later session with bookings.", parameters: [ { name: id, in: path, required: true, schema: { type: integer } } ], requestBody: { content: { application/json: { schema: { type: object, properties: { status: { type: string, enum: [Draft, Slot Creation, Booking Open, Closed, Completed] } } } } } }, responses: { "200": { description: OK }, "409": { description: Move not allowed from the current status } } }
+  /exams/{id}/publish:
+    post: { summary: "Publish results and notify students (admin). The examination must be Closed or Completed. If booked students are unevaluated the call returns 409 with pending_evaluations; repeat with {force: true} to publish anyway. Publishing locks the examination at Completed.", parameters: [ { name: id, in: path, required: true, schema: { type: integer } } ], requestBody: { content: { application/json: { schema: { type: object, properties: { force: { type: boolean } } } } } }, responses: { "200": { description: "{exam, pending_evaluations}" }, "409": { description: "Not closed, already published, or students still unevaluated" } } }
+  /exams/{id}/rubrics:
+    parameters: [ { name: id, in: path, required: true, schema: { type: integer } } ]
+    get: { summary: List rubric criteria (cached), responses: { "200": { description: OK } } }
+    post: { summary: Add criterion (admin), responses: { "201": { description: Created } } }
+  /rubrics/{id}:
+    parameters: [ { name: id, in: path, required: true, schema: { type: integer } } ]
+    put: { summary: Update criterion (admin), responses: { "200": { description: OK } } }
+    delete: { summary: Delete criterion (admin), responses: { "200": { description: OK } } }
+  /examiners:
+    get: { summary: List/search examiners (admin), parameters: [ { name: q, in: query, schema: { type: string } } ], responses: { "200": { description: OK } } }
+    post: { summary: Create examiner (admin), responses: { "201": { description: Created } } }
+  /examiners/{id}:
+    put: { summary: Update / activate / deactivate examiner (admin), parameters: [ { name: id, in: path, required: true, schema: { type: integer } } ], responses: { "200": { description: OK } } }
+  /students:
+    get: { summary: List/search students (admin), parameters: [ { name: q, in: query, schema: { type: string } } ], responses: { "200": { description: OK } } }
+  /students/{id}/status:
+    put: { summary: Activate/deactivate student (admin), parameters: [ { name: id, in: path, required: true, schema: { type: integer } } ], responses: { "200": { description: OK } } }
+  /slots:
+    get: { summary: "List slots. Student must pass exam_id (cached schedule); examiner sees own; admin sees all", parameters: [ { name: exam_id, in: query, schema: { type: integer } }, { name: examiner_id, in: query, schema: { type: integer } } ], responses: { "200": { description: OK } } }
+    post: { summary: "Create slot. Examiner: only while the exam is in Slot Creation and inside its slot dates. Admin: while the exam is in Slot Creation or Booking Open (dates are not enforced). Overlaps for one examiner are rejected, even for simultaneous requests.", responses: { "201": { description: Created }, "403": { description: Not allowed for this examiner or period }, "409": { description: Overlap or examination status does not allow slots } } }
+  /slots/{id}:
+    parameters: [ { name: id, in: path, required: true, schema: { type: integer } } ]
+    put: { summary: Update slot (examiner before booking opens; admin any time = reschedule), responses: { "200": { description: OK } } }
+    delete: { summary: Cancel slot, responses: { "200": { description: OK } } }
+  /slots/{id}/examiner:
+    put: { summary: Change assigned examiner (admin), parameters: [ { name: id, in: path, required: true, schema: { type: integer } } ], responses: { "200": { description: OK } } }
+  /slots/{id}/bookings:
+    get: { summary: Students booked in a slot, parameters: [ { name: id, in: path, required: true, schema: { type: integer } } ], responses: { "200": { description: OK } } }
+  /slots/{id}/complete:
+    post: { summary: Mark slot completed (examiner), parameters: [ { name: id, in: path, required: true, schema: { type: integer } } ], responses: { "200": { description: OK } } }
+  /bookings:
+    get: { summary: "Student: own history. Admin: all, searchable (q, status)", parameters: [ { name: q, in: query, schema: { type: string } }, { name: status, in: query, schema: { type: string } } ], responses: { "200": { description: OK } } }
+    post: { summary: Book a slot (student), requestBody: { content: { application/json: { schema: { type: object, required: [slot_id], properties: { slot_id: { type: integer } } } } } }, responses: { "201": { description: Created }, "409": { description: Duplicate or full } } }
+  /bookings/{id}/cancel:
+    post: { summary: Cancel booking before deadline (student), parameters: [ { name: id, in: path, required: true, schema: { type: integer } } ], responses: { "200": { description: OK } } }
+  /bookings/{id}/reschedule:
+    put: { summary: Move booking to another slot/examiner (admin), parameters: [ { name: id, in: path, required: true, schema: { type: integer } } ], responses: { "200": { description: OK } } }
+  /bookings/{id}/evaluate:
+    post: { summary: Submit rubric marks and remarks (examiner of that slot), parameters: [ { name: id, in: path, required: true, schema: { type: integer } } ], requestBody: { content: { application/json: { schema: { type: object, properties: { scores: { type: array, items: { type: object, properties: { rubric_id: {type: integer}, marks: {type: number} } } }, remarks: { type: string } } } } } }, responses: { "200": { description: OK } } }
+  /bookings/{id}/evaluation-history:
+    get: { summary: Earlier versions of an evaluation that was changed before publication, newest first (admin), parameters: [ { name: id, in: path, required: true, schema: { type: integer } } ], responses: { "200": { description: OK } } }
+  /results:
+    get: { summary: Published results with feedback (student), responses: { "200": { description: OK } } }
+  /dashboard:
+    get: { summary: Role-specific dashboard data, responses: { "200": { description: OK } } }
+  /admin/charts:
+    get: { summary: Popular exams, examiner workload, booking trend, responses: { "200": { description: OK } } }
+  /admin/search:
+    get: { summary: Search students, examiners, exams, bookings, parameters: [ { name: q, in: query, schema: { type: string } } ], responses: { "200": { description: OK } } }
+  /admin/report:
+    get: { summary: Monthly statistics, parameters: [ { name: year, in: query, schema: { type: integer } }, { name: month, in: query, schema: { type: integer } } ], responses: { "200": { description: OK } } }
+  /admin/report/pdf:
+    get: { summary: Download the monthly report as a PDF (admin), parameters: [ { name: year, in: query, schema: { type: integer } }, { name: month, in: query, schema: { type: integer } } ], responses: { "200": { description: application/pdf } } }
+  /admin/report/send:
+    post: { summary: Email current month report to admin, responses: { "200": { description: OK } } }
+  /notifications:
+    get: { summary: Latest notifications, responses: { "200": { description: OK } } }
+  /notifications/read:
+    post: { summary: Mark all read, responses: { "200": { description: OK } } }
+  /export/history:
+    post: { summary: Trigger async CSV export (Celery), responses: { "202": { description: Accepted - {id, status} } } }
+  /export/{id}:
+    get: { summary: Poll export job, parameters: [ { name: id, in: path, required: true, schema: { type: integer } } ], responses: { "200": { description: OK } } }
+  /export/{id}/download:
+    get: { summary: Download finished CSV, parameters: [ { name: id, in: path, required: true, schema: { type: integer } } ], responses: { "200": { description: text/csv } } }

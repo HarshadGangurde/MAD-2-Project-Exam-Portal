@@ -1,0 +1,8 @@
+Flask==3.0.3
+Flask-SQLAlchemy==3.1.1
+Flask-JWT-Extended==4.6.0
+redis==5.0.8
+celery==5.4.0
+# celery 5.4.0 accepts any kombu below 6.0, but kombu 5.6+ refuses redis-py older than 6.1 ("Redis transport requires
+# redis-py versions 6.1.0 or later"). This is the kombu release Celery 5.4.0 shipped with and it works with redis 5.0.8.
+kombu==5.3.7
