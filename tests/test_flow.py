@@ -244,7 +244,11 @@ class EmpTest(unittest.TestCase):
             self.db.session.add_all([Booking(student_id=4, slot_id=today_slot.id, exam_id=ex.id),
                                 Booking(student_id=5, slot_id=tomorrow_slot.id, exam_id=ex.id)])
             self.db.session.commit()
-        self.assertEqual(tasks.daily_reminders(), 1)
+        real, tasks.send_mail = tasks.send_mail, lambda *a, **k: True    # the tests' mail server is closed: pretend it works
+        try:
+            self.assertEqual(tasks.daily_reminders(), 1)
+        finally:
+            tasks.send_mail = real
 
     def test_14_seed_script_works_with_enforced_foreign_keys(self):
         import runpy
@@ -665,6 +669,54 @@ class EmpTest(unittest.TestCase):
         src = open(os.path.join(ROOT, "backend", "config.py"), encoding="utf-8").read()
         self.assertNotIn("redis://localhost", src)
         self.assertIn('"MAIL_HOST", "127.0.0.1"', src)
+
+    def test_28_failed_reminder_mail_is_retried_not_lost(self):
+        """Regression: the reminder used to be recorded as sent even when its e-mail failed, so it was lost for good."""
+        import tasks
+        from datetime import time as dtime
+        with self.app.app_context():
+            from models import Exam, Slot, Booking
+            ex = Exam(course_id=1, name="Retry Exam", type="Viva", duration=10, max_marks=10, status="Booking Open")
+            self.db.session.add(ex)
+            self.db.session.flush()
+            slot = Slot(exam_id=ex.id, examiner_id=2, date=TODAY + timedelta(days=1), start_time=dtime(11, 0),
+                        end_time=dtime(12, 0), capacity=2, available_seats=1)
+            self.db.session.add(slot)
+            self.db.session.flush()
+            self.db.session.add(Booking(student_id=4, slot_id=slot.id, exam_id=ex.id))
+            self.db.session.commit()
+
+        def notes(user_id, start="Reminder: Retry Exam"):
+            with self.app.app_context():
+                from models import Notification
+                return [(n.message, n.read) for n in Notification.query.filter_by(user_id=user_id).all() if n.message.startswith(start)]
+
+        def admin_alerts():
+            with self.app.app_context():
+                from models import Notification, User
+                admin = User.query.filter_by(role="admin").first()
+                return [n.message for n in Notification.query.filter_by(user_id=admin.id).all() if "could not be sent" in n.message]
+
+        real = tasks.send_mail
+        try:
+            tasks.send_mail = lambda *a, **k: False                  # the e-mail fails (server down, password revoked ...)
+            self.assertEqual(tasks.daily_reminders(), 0)             # nobody counts as reminded
+            mine = notes(4)
+            self.assertEqual(len(mine), 1)
+            self.assertTrue(mine[0][0].endswith("[e-mail not delivered]"))   # but the student is still told in the portal
+            self.assertTrue(admin_alerts())                          # and the admin can see that mails failed
+            self.assertEqual(tasks.daily_reminders(), 0)             # failing again adds no duplicate rows
+            self.assertEqual(len(notes(4)), 1)
+
+            tasks.send_mail = lambda *a, **k: True                   # the server is back: the same run retries the mail
+            self.assertGreaterEqual(tasks.daily_reminders(), 1)
+            mine = notes(4)
+            self.assertEqual(len(mine), 1)                           # the tagged note became the normal one (no duplicate)
+            self.assertFalse(mine[0][0].endswith("[e-mail not delivered]"))
+            self.assertFalse(mine[0][1])                             # and it is unread again
+            self.assertEqual(tasks.daily_reminders(), 0)             # now it is never mailed a second time
+        finally:
+            tasks.send_mail = real
 
     def test_99_login_rate_limit(self):
         codes = [self.call(None, "POST", "/auth/login", {"email": "a@b.co", "password": "bad"}).status_code for _ in range(12)]

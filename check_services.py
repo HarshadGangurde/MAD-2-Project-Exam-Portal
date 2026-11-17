@@ -157,6 +157,11 @@ def check_mail():
         return check("e-mail server accepts us", False, f"{where}: login refused for {Config.MAIL_USERNAME}",
                      "wrong or revoked app password: create a new one and put it in .env (MAIL_PASSWORD)")
     except Exception as e:
+        if not Config.MAIL_USERNAME and Config.MAIL_HOST in ("127.0.0.1", "localhost"):
+            # Default set-up with no mail catcher running: a normal state (mails are only logged), not a fault.
+            info(f"no mail server at {where}: e-mails are only logged. Optional: start Mailpit/MailHog to see them, "
+                 "or put MAIL_USERNAME / MAIL_PASSWORD in .env to send through Gmail.")
+            return True
         return check("e-mail server accepts us", False, f"{where}: {str(e).splitlines()[0] if str(e) else type(e).__name__}",
                      "is the mail server running / MAIL_HOST and MAIL_PORT right? (mails are only logged until then)")
 

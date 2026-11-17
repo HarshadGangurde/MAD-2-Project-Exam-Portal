@@ -4,6 +4,7 @@ import html
 import os
 import sys
 import time
+import logging
 from datetime import date, timedelta
 
 from celery_app import celery
@@ -14,6 +15,7 @@ from models import db, Booking, ExportJob, Notification, Slot, User
 from services import email_html, monthly_report_html, monthly_report_pdf, monthly_stats, send_chat, send_mail
 
 _app = None
+log = logging.getLogger("emp")
 
 
 def flask_app():
@@ -46,29 +48,53 @@ def send_email(to, subject, html, pdf_b64=None):
 
 @celery.task(name="tasks.daily_reminders")
 def daily_reminders():
-    """Day-before reminder: every student booked for tomorrow gets one (email + optional Google Chat).
-    Only tomorrow is selected, so nobody is reminded twice for the same examination."""
+    """Day-before reminder: every student booked for tomorrow gets one (email + optional Google Chat) and an in-app note.
+    Only tomorrow is selected, so nobody is reminded twice for the same examination.
+
+    A student counts as REMINDED only when the e-mail (or the chat message) was really delivered. If delivery fails
+    (mail server down, revoked app password ...) the student still gets an in-app reminder, tagged "[e-mail not
+    delivered]", the admin is told, and running the job again later retries exactly those students: the tagged note is
+    turned into the normal one and nobody who was already reminded is mailed twice. Returns the number delivered."""
     with flask_app().app_context():
         tomorrow = date.today() + timedelta(days=1)
         bookings = Booking.query.join(Slot).filter(Booking.status == "Booked", Slot.date == tomorrow).all()
-        sent = 0
+        sent = failed = 0
         for b in bookings:
             s, e = b.slot, b.exam
             text = (f"Reminder: {e.name} ({e.course.code}) on {s.date} at {s.start_time:%H:%M}-{s.end_time:%H:%M}. "
                     f"Examiner: {s.examiner.name}. Instructions: {e.instructions or 'None'}")
+            marker = text[:250]                                  # present = delivered
+            undelivered = text[:225] + " [e-mail not delivered]"  # present = in-app only so far, e-mail still to retry
             # Idempotent: running the job again (manual re-run, beat restart) must not remind the same student twice.
-            if Notification.query.filter_by(user_id=b.student_id, message=text[:250]).first():
+            if Notification.query.filter_by(user_id=b.student_id, message=marker).first():
                 continue
+            pending = Notification.query.filter_by(user_id=b.student_id, message=undelivered).first()
             mail = email_html(f"Reminder: {e.name} is tomorrow", f"Hi {b.student.name}, this is a reminder about your examination.",
                               [("Examination", f"{e.name} ({e.course.code})"), ("Type", e.type), ("Date", f"{s.date:%A, %d %B %Y}"),
                                ("Time", f"{s.start_time:%H:%M} - {s.end_time:%H:%M}"), ("Examiner", s.examiner.name),
                                ("Meeting link", s.meeting_link)],
                               note=f"Instructions: {e.instructions}" if e.instructions else None)
-            send_mail(b.student.email, f"Exam reminder: {e.name} on {s.date:%d %b}", mail)
-            send_chat(f"{b.student.name}: {text}")
-            db.session.add(Notification(user_id=b.student_id, message=text[:250], link="/student/bookings"))
+            mail_ok = send_mail(b.student.email, f"Exam reminder: {e.name} on {s.date:%d %b}", mail)
+            chat_ok = send_chat(f"{b.student.name}: {text}")
+            if mail_ok or chat_ok:
+                if pending:                                      # earlier attempt failed, this one worked
+                    pending.message, pending.read = marker, False
+                else:
+                    db.session.add(Notification(user_id=b.student_id, message=marker, link="/student/bookings"))
+                sent += 1
+            else:
+                failed += 1
+                if not pending:                                  # the student is still reminded, inside the portal
+                    db.session.add(Notification(user_id=b.student_id, message=undelivered, link="/student/bookings"))
             db.session.commit()
-            sent += 1
+        if failed:
+            note = (f"{failed} reminder e-mail(s) for {tomorrow} could not be sent. Check the mail settings (.env) "
+                    "and run the job again to retry.")
+            log.warning(note)
+            admin = User.query.filter_by(role="admin").first()
+            if admin and not Notification.query.filter_by(user_id=admin.id, message=note).first():
+                db.session.add(Notification(user_id=admin.id, message=note, link="/admin"))
+                db.session.commit()
         return sent
 
 
