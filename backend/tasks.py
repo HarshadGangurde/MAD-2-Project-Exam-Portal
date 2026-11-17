@@ -3,16 +3,15 @@ import csv
 import html
 import os
 import sys
+import time
 from datetime import date, timedelta
 
 from celery_app import celery
-import sys
-import os
 # Ensure backend directory is in path for Celery workers
 sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
 
 from models import db, Booking, ExportJob, Notification, Slot, User
-from services import monthly_report_html, monthly_report_pdf, monthly_stats, send_chat, send_mail
+from services import email_html, monthly_report_html, monthly_report_pdf, monthly_stats, send_chat, send_mail
 
 _app = None
 
@@ -60,7 +59,12 @@ def daily_reminders():
             # Idempotent: running the job again (manual re-run, beat restart) must not remind the same student twice.
             if Notification.query.filter_by(user_id=b.student_id, message=text[:250]).first():
                 continue
-            send_mail(b.student.email, f"Exam reminder: {e.name}", f"<p>{html.escape(text)}</p>")
+            mail = email_html(f"Reminder: {e.name} is tomorrow", f"Hi {b.student.name}, this is a reminder about your examination.",
+                              [("Examination", f"{e.name} ({e.course.code})"), ("Type", e.type), ("Date", f"{s.date:%A, %d %B %Y}"),
+                               ("Time", f"{s.start_time:%H:%M} - {s.end_time:%H:%M}"), ("Examiner", s.examiner.name),
+                               ("Meeting link", s.meeting_link)],
+                              note=f"Instructions: {e.instructions}" if e.instructions else None)
+            send_mail(b.student.email, f"Exam reminder: {e.name} on {s.date:%d %b}", mail)
             send_chat(f"{b.student.name}: {text}")
             db.session.add(Notification(user_id=b.student_id, message=text[:250], link="/student/bookings"))
             db.session.commit()
@@ -78,7 +82,7 @@ def monthly_report():
         marker = f"Monthly report for {stats['month']} was emailed to you."
         if Notification.query.filter_by(user_id=admin.id, message=marker).first():
             return stats  # already sent for that month (idempotent re-run)
-        sent = send_mail(admin.email, f"Monthly examination report - {stats['month']}", monthly_report_html(stats),
+        sent = send_mail(flask_app().config["ADMIN_NOTIFY_EMAIL"], f"Monthly examination report - {stats['month']}", monthly_report_html(stats),
                          monthly_report_pdf(stats))
         if sent:  # only a mail that really went out counts as "done"; a failed one is retried on the next run
             db.session.add(Notification(user_id=admin.id, message=marker, link="/admin"))
@@ -95,7 +99,7 @@ def export_history(job_id):
             export_dir = flask_app().config["EXPORT_DIR"]
             os.makedirs(export_dir, exist_ok=True)
             # Clean old export files (> 1 hour) so they do not pile up. Only our own history_*.csv files are touched.
-            now = __import__("time").time()
+            now = time.time()
             for fn in os.listdir(export_dir):
                 fp = os.path.join(export_dir, fn)
                 try:

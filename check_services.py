@@ -135,4 +135,32 @@ if schedule:
 else:
     info("beat has not been started yet (no celerybeat-schedule file): start everything with  python run.py")
 
+# ---- 5. e-mail -------------------------------------------------------------------------------------------------
+import smtplib  # noqa: E402
+
+
+def check_mail():
+    """Connect (and log in, if a username is set) to the configured SMTP server. Sends nothing."""
+    where = f"{Config.MAIL_HOST}:{Config.MAIL_PORT}"
+    try:
+        smtp = (smtplib.SMTP_SSL if Config.MAIL_USE_SSL else smtplib.SMTP)(Config.MAIL_HOST, Config.MAIL_PORT, timeout=10)
+        with smtp as s:
+            if Config.MAIL_USE_TLS and not Config.MAIL_USE_SSL:
+                s.starttls()
+            if Config.MAIL_USERNAME:
+                s.ehlo()
+                if "PLAIN" in s.esmtp_features.get("auth", ""):
+                    s.esmtp_features["auth"] = "PLAIN"
+                s.login(Config.MAIL_USERNAME, Config.MAIL_PASSWORD)
+        return check("e-mail server accepts us", True, where + (f", signed in as {Config.MAIL_USERNAME}" if Config.MAIL_USERNAME else ""))
+    except smtplib.SMTPAuthenticationError:
+        return check("e-mail server accepts us", False, f"{where}: login refused for {Config.MAIL_USERNAME}",
+                     "wrong or revoked app password: create a new one and put it in .env (MAIL_PASSWORD)")
+    except Exception as e:
+        return check("e-mail server accepts us", False, f"{where}: {str(e).splitlines()[0] if str(e) else type(e).__name__}",
+                     "is the mail server running / MAIL_HOST and MAIL_PORT right? (mails are only logged until then)")
+
+
+check_mail()
+
 finish()

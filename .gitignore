@@ -18,3 +18,6 @@ Thumbs.db
 
 # Submission archives built by prepare_submission.ps1
 emp_*.zip
+
+# Secrets
+.env

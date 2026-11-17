@@ -22,6 +22,8 @@ Config.EXPORT_DIR = _tmp
 Config.AUDIT_LOG = os.path.join(_tmp, "audit.log")
 Config.REDIS_URL = "redis://127.0.0.1:1/0"          # unreachable on purpose: exercises the fallbacks
 Config.CELERY_BROKER_URL = "redis://127.0.0.1:1/1"
+# Tests must never send real mail (not even with a Gmail .env): point at a closed port, no login.
+Config.MAIL_HOST, Config.MAIL_PORT, Config.MAIL_USERNAME, Config.MAIL_USE_TLS, Config.MAIL_USE_SSL = "127.0.0.1", 1, "", False, False
 
 import cache  # noqa: E402
 from app import create_app  # noqa: E402
@@ -620,7 +622,11 @@ class EmpTest(unittest.TestCase):
                 return Notification.query.filter(Notification.message.like("Monthly report for%")).count()
         
         start = count()
-        tasks.monthly_report()                                  # no SMTP server in the tests: nothing was sent...
+        real, tasks.send_mail = tasks.send_mail, lambda *a, **k: False   # mail fails (independent of any local SMTP)
+        try:
+            tasks.monthly_report()                              # nothing was sent...
+        finally:
+            tasks.send_mail = real
         self.assertEqual(count(), start)                        # ...so it is not recorded and would be retried
         real, tasks.send_mail = tasks.send_mail, lambda *a, **k: True
         try:

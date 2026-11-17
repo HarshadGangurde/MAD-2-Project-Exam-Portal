@@ -2,11 +2,14 @@
 import html
 import json
 import logging
+import re
 import smtplib
 import time
 import urllib.request
 from calendar import monthrange
 from datetime import date, datetime
+from email.header import Header
+from email.utils import formataddr, formatdate, make_msgid
 from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -20,24 +23,78 @@ log = logging.getLogger("emp")
 _mail_down_until = 0.0   # after a failed connection, skip the SMTP server for a while (see send_mail)
 
 
-def send_mail(to, subject, html, pdf=None):
-    """Send one e-mail. Never raises. If the SMTP server cannot be reached, further mails are skipped for 60 s:
-    a refused connection costs seconds (about 4 s on Windows), which would otherwise be paid once per recipient."""
+def _plain(html_text):
+    """Readable plain-text version of an HTML mail (for clients that do not show HTML)."""
+    t = re.sub(r"(?is)<(style|head).*?</\\1>", "", html_text)
+    t = re.sub(r"(?i)<br\\s*/?>|</(p|div|tr|h[1-6])>", "\\n", t)
+    t = re.sub(r"(?i)</t[dh]>", "  ", t)
+    t = re.sub(r"<[^>]+>", "", t)
+    return re.sub(r"\\n\\s*\\n+", "\\n\\n", html.unescape(t)).strip()
+
+
+def email_html(title, intro, rows=None, note=None, footer="This is an automated message from the Examination Management Portal."):
+    """One consistent, mail-client-safe layout (tables + inline styles). rows = [(label, value), ...] (escaped here)."""
+    e = html.escape
+    table = ""
+    if rows:
+        body = "".join(
+            f'<tr><td style="padding:8px 12px;color:#64748b;border-bottom:1px solid #e2e8f0;width:38%">{e(str(k))}</td>'
+            f'<td style="padding:8px 12px;font-weight:600;border-bottom:1px solid #e2e8f0">{e(str(v))}</td></tr>'
+            for k, v in rows if v not in (None, ""))
+        table = f'<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin:16px 0;font-size:14px">{body}</table>'
+    note_html = f'<p style="font-size:14px;color:#334155;margin:0 0 12px">{e(note)}</p>' if note else ""
+    return (
+        '<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>'
+        '<body style="margin:0;background:#f1f5f9;font-family:Arial,Helvetica,sans-serif;color:#0f172a">'
+        '<table role="presentation" width="100%" cellspacing="0" cellpadding="0"><tr><td align="center" style="padding:24px 12px">'
+        '<table role="presentation" width="600" cellspacing="0" cellpadding="0" style="max-width:600px;width:100%;background:#ffffff;border-radius:10px;overflow:hidden">'
+        '<tr><td style="background:#4f46e5;color:#ffffff;padding:18px 24px;font-size:18px;font-weight:bold">Examination Management Portal</td></tr>'
+        f'<tr><td style="padding:24px"><h2 style="margin:0 0 12px;font-size:20px">{e(title)}</h2>'
+        f'<p style="font-size:15px;line-height:1.5;margin:0 0 8px">{e(intro)}</p>{table}{note_html}</td></tr>'
+        f'<tr><td style="padding:14px 24px;background:#f8fafc;color:#94a3b8;font-size:12px">{e(footer)}</td></tr>'
+        '</table></td></tr></table></body></html>')
+
+
+def send_mail(to, subject, html_body, pdf=None, text=None):
+    """Send one e-mail (HTML + plain-text alternative, optional PDF). Never raises. If the SMTP server cannot be reached,
+    further mails are skipped for 60 s: a refused connection costs seconds, which would otherwise be paid per recipient.
+    Works with a local sink (MailHog/Mailpit) and with a real server (MAIL_USERNAME/MAIL_PASSWORD, MAIL_USE_TLS/SSL)."""
     global _mail_down_until
     cfg = current_app.config
     if time.time() < _mail_down_until:
         log.warning("mail to %s skipped (SMTP server unreachable a moment ago). Subject: %s", to, subject)
         return False
-    msg = MIMEMultipart()
-    msg.attach(MIMEText(html, "html"))
+    msg = MIMEMultipart("mixed")
+    alt = MIMEMultipart("alternative")
+    alt.attach(MIMEText(text or _plain(html_body), "plain", "utf-8"))
+    alt.attach(MIMEText(html_body, "html", "utf-8"))
+    msg.attach(alt)
     if pdf:
         part = MIMEApplication(pdf, _subtype="pdf")
         part.add_header("Content-Disposition", "attachment", filename="examination_report.pdf")
         msg.attach(part)
-    msg["Subject"], msg["From"], msg["To"] = subject, cfg["MAIL_FROM"], to
+    sender = cfg["MAIL_FROM"]
+    msg["Subject"] = Header(subject, "utf-8")
+    msg["From"] = formataddr((cfg.get("MAIL_FROM_NAME", "Examination Portal"), sender))
+    msg["To"] = to
+    msg["Date"] = formatdate(localtime=True)
+    msg["Message-ID"] = make_msgid(domain=sender.split("@")[-1] or "localhost")
     try:
-        with smtplib.SMTP(cfg["MAIL_HOST"], cfg["MAIL_PORT"], timeout=5) as s:
-            s.send_message(msg)
+        if cfg.get("MAIL_USE_SSL"):
+            smtp = smtplib.SMTP_SSL(cfg["MAIL_HOST"], cfg["MAIL_PORT"], timeout=10)
+        else:
+            smtp = smtplib.SMTP(cfg["MAIL_HOST"], cfg["MAIL_PORT"], timeout=10)
+        with smtp as s:
+            if cfg.get("MAIL_USE_TLS") and not cfg.get("MAIL_USE_SSL"):
+                s.starttls()
+            if cfg.get("MAIL_USERNAME"):
+                # Offer only PLAIN: after a refused login Gmail hangs up, which smtplib reports as a vague
+                # "connection closed" when it then tries the next method. One method = the real error (535 bad password).
+                s.ehlo()
+                if "PLAIN" in s.esmtp_features.get("auth", ""):
+                    s.esmtp_features["auth"] = "PLAIN"
+                s.login(cfg["MAIL_USERNAME"], cfg.get("MAIL_PASSWORD", ""))
+            s.send_message(msg, from_addr=sender, to_addrs=[to])
         return True
     except Exception as e:  # mail server not running is fine for local demos
         if isinstance(e, OSError):  # cannot connect / timed out (not e.g. a rejected recipient)
@@ -116,16 +173,10 @@ def monthly_report_pdf(stats):
 
 
 def monthly_report_html(stats):
-    rows = "".join(f"<tr><td>{html.escape(e['name'])}</td><td>{e['evaluations']}</td></tr>"
-                   for e in stats["active_examiners"]) \
-        or "<tr><td colspan=2>No evaluations</td></tr>"
-    return f"""<html><body style="font-family:Arial,sans-serif">
-<h2>Examination Report &ndash; {stats['month']}</h2>
-<table border="1" cellpadding="6" cellspacing="0">
-<tr><td>Examinations conducted</td><td>{stats['examinations_conducted']}</td></tr>
-<tr><td>Students evaluated</td><td>{stats['students_evaluated']}</td></tr>
-<tr><td>Completed bookings</td><td>{stats['completed_bookings']}</td></tr>
-<tr><td>Pending evaluations</td><td>{stats['pending_evaluations']}</td></tr></table>
-<h3>Most active examiners</h3>
-<table border="1" cellpadding="6" cellspacing="0"><tr><th>Examiner</th><th>Evaluations</th></tr>{rows}</table>
-</body></html>"""
+    exam_rows = [("Examinations conducted", stats["examinations_conducted"]), ("Students evaluated", stats["students_evaluated"]),
+                 ("Completed bookings", stats["completed_bookings"]), ("Pending evaluations", stats["pending_evaluations"])]
+    top = [(e["name"], f"{e['evaluations']} evaluation(s)") for e in stats["active_examiners"]] or [("Most active examiners", "No evaluations")]
+    page = email_html(f"Examination report - {stats['month']}", "Here are the examination statistics for the month.",
+                      exam_rows + [("Most active examiners", "")] + top,
+                      note="The full report is attached as a PDF.")
+    return page

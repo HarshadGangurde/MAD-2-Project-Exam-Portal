@@ -1,5 +1,4 @@
 import base64
-import html
 import json
 import logging
 import re
@@ -11,11 +10,12 @@ from flask import Blueprint, Response, jsonify, request, send_from_directory, cu
 from flask_jwt_extended import create_access_token, get_jwt_identity, jwt_required
 from sqlalchemy import func, or_
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import joinedload, selectinload
 
 import cache
 from models import (db, User, Course, Exam, Rubric, Slot, Booking, Evaluation, EvaluationScore, EvaluationHistory,
                     Notification, ExportJob, EXAM_TYPES, EXAM_STATUSES, EXAM_TRANSITIONS, utc_now)
-from services import monthly_report_html, monthly_report_pdf, monthly_stats, send_mail
+from services import email_html, monthly_report_html, monthly_report_pdf, monthly_stats, send_mail
 
 api = Blueprint("api", __name__)
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
@@ -556,8 +556,9 @@ def publish_results(u, eid):
     for b in Booking.query.filter(Booking.exam_id == eid, Booking.status == "Completed").all():
         notify(b.student_id, f"Results published for {e.name}", "/student/results")
         mail_async(b.student.email, f"Results published: {e.name}",
-                   f"<p>Hi {html.escape(b.student.name)}, your result for <b>{html.escape(e.name)}</b> is now available "
-                   "on the portal.</p>")
+                   email_html(f"Your result for {e.name} is available", f"Hi {b.student.name}, the results have been published.",
+                              [("Examination", f"{e.name} ({e.course.code})")],
+                              note="Sign in to the portal (Results) to see your marks, rubric breakdown and examiner feedback."))
     db.session.commit()
     audit(u, "exam.publish", exam=eid, pending_evaluations=pending)
     clear_exam_cache()
@@ -890,6 +891,10 @@ def list_bookings(u):
                 Booking.id == (int(request.args["q"]) if request.args["q"].isdigit() else -1)))
     if request.args.get("status"):
         q = q.filter(Booking.status == request.args["status"])
+    # Load everything to_dict() touches in a few queries instead of several per booking (N+1).
+    q = q.options(joinedload(Booking.student), joinedload(Booking.exam).joinedload(Exam.course),
+                  joinedload(Booking.slot).joinedload(Slot.examiner),
+                  selectinload(Booking.evaluation).selectinload(Evaluation.scores).joinedload(EvaluationScore.rubric))
     data = [b.to_dict(with_eval=True) for b in q.order_by(Booking.id.desc())]
     if u.role == "student":  # marks/remarks stay hidden until results are published
         for b in data:
@@ -943,6 +948,12 @@ def book_slot(u):
         db.session.rollback()
         raise ApiError("You already have a booking for this examination", 409)
     cache.invalidate("schedule:")
+    mail_async(u.email, f"Booking confirmed: {exam.name}",
+               email_html("Your booking is confirmed", f"Hi {u.name}, your slot is booked.",
+                          [("Examination", f"{exam.name} ({exam.course.code})"), ("Date", f"{s.date:%A, %d %B %Y}"),
+                           ("Time", f"{s.start_time:%H:%M} - {s.end_time:%H:%M}"), ("Examiner", s.examiner.name),
+                           ("Meeting link", s.meeting_link)],
+                          note="You can cancel from My Bookings until the booking deadline."))
     return jsonify(b.to_dict()), 201
 
 
@@ -966,6 +977,11 @@ def cancel_booking(u, bid):
     refresh_slot_status(b.slot)
     notify(u.id, f"Cancelled booking for {b.exam.name}", "/student/bookings")
     db.session.commit()
+    mail_async(u.email, f"Booking cancelled: {b.exam.name}",
+               email_html("Your booking was cancelled", f"Hi {u.name}, your booking has been cancelled.",
+                          [("Examination", f"{b.exam.name} ({b.exam.course.code})"), ("Date", f"{b.slot.date:%A, %d %B %Y}"),
+                           ("Time", f"{b.slot.start_time:%H:%M} - {b.slot.end_time:%H:%M}")],
+                          note="You may book another slot while booking is open."))
     cache.invalidate("schedule:")
     return jsonify(b.to_dict())
 
@@ -1012,6 +1028,11 @@ def reschedule_booking(u, bid):
     notify(b.student_id, f"Your {b.exam.name} booking moved to {new.date} {new.start_time:%H:%M} "
                          f"with {new.examiner.name}", "/student/bookings")
     db.session.commit()
+    mail_async(b.student.email, f"Booking rescheduled: {b.exam.name}",
+               email_html("Your booking was rescheduled", f"Hi {b.student.name}, the administrator moved your slot.",
+                          [("Examination", f"{b.exam.name} ({b.exam.course.code})"), ("New date", f"{new.date:%A, %d %B %Y}"),
+                           ("Time", f"{new.start_time:%H:%M} - {new.end_time:%H:%M}"), ("Examiner", new.examiner.name),
+                           ("Meeting link", new.meeting_link)]))
     audit(u, "booking.reschedule", booking=bid, old_slot=old_id, new_slot=new_id)
     cache.invalidate("schedule:")
     return jsonify(b.to_dict())
@@ -1173,7 +1194,7 @@ def report(u):
 def send_report(u):
     t = date.today()
     s = monthly_stats(t.year, t.month)
-    mail_async(u.email, f"Examination report - {s['month']}", monthly_report_html(s), monthly_report_pdf(s))
+    mail_async(current_app.config["ADMIN_NOTIFY_EMAIL"], f"Examination report - {s['month']}", monthly_report_html(s), monthly_report_pdf(s))
     return jsonify(ok=True)
 
 

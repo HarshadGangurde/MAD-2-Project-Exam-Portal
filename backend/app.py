@@ -75,8 +75,8 @@ def create_app():
             "Content-Security-Policy",
             "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; "
             "script-src 'self' 'unsafe-eval' https://cdn.jsdelivr.net; "
-            "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://fonts.googleapis.com; "
-            "font-src 'self' https://cdn.jsdelivr.net https://fonts.gstatic.com; "
+            "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+            "font-src 'self' https://cdn.jsdelivr.net; "
             "img-src 'self' data:; "
             "connect-src 'self';"
         )
@@ -106,11 +106,17 @@ def create_app():
 
 
 def ensure_indexes(app):
-    """create_all() never adds indexes to tables that already exist, so create the booking rule here (idempotent)."""
+    """create_all() never adds indexes to tables that already exist, so create them here (idempotent): the booking
+    rule (one active booking per student and exam) and indexes on the columns the API filters and joins on."""
     try:
         db.session.execute(text(
             "CREATE UNIQUE INDEX IF NOT EXISTS uq_active_booking ON bookings (student_id, exam_id) "
             "WHERE status != 'Cancelled'"))
+        for name, table, cols in (("ix_bookings_slot", "bookings", "slot_id"), ("ix_bookings_exam", "bookings", "exam_id"),
+                                  ("ix_slots_exam", "slots", "exam_id"), ("ix_slots_examiner_date", "slots", "examiner_id, date"),
+                                  ("ix_rubrics_exam", "rubrics", "exam_id"), ("ix_evals_examiner", "evaluations", "examiner_id"),
+                                  ("ix_evals_student", "evaluations", "student_id")):
+            db.session.execute(text(f"CREATE INDEX IF NOT EXISTS {name} ON {table} ({cols})"))
         db.session.commit()
     except Exception as e:  # existing data already breaks the rule: keep running, the API check still applies
         db.session.rollback()

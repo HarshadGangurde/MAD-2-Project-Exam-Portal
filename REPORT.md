@@ -18,7 +18,7 @@
 <State the tools used and the extent, e.g. "Claude Code generated the initial Flask API, Vue pages and Celery tasks; I reviewed, ran and tested every feature and can explain all code.">
 
 ## 4. Frameworks and libraries
-Flask, Flask-SQLAlchemy (SQLite, tables created in code), Flask-JWT-Extended (token auth), redis-py, Celery (+ beat), Vue 3 and Vue Router (CDN), Bootstrap 5 with Bootstrap Icons (the Bootstrap project's icon font) and the Plus Jakarta Sans web font. The dashboard charts are drawn by a small hand-written SVG component (no charting library). The PDF report, input validation, rate limiting (Redis counters with in-memory fallback), token revocation (Redis) and the test suite (`unittest`) use only the Python standard library and the packages above - no additional libraries.
+Flask, Flask-SQLAlchemy (SQLite, tables created in code), Flask-JWT-Extended (token auth), redis-py, Celery (+ beat), Vue 3 (CDN, with a small hand-written router) and Bootstrap 5 (CDN; icons are built-in Unicode glyphs, system fonts). The dashboard charts use Chart.js (CDN). The PDF report, input validation, rate limiting (Redis counters with in-memory fallback), token revocation (Redis) and the test suite (`unittest`) use only the Python standard library and the packages above - no additional libraries.
 
 ## 5. ER diagram
 Paste the diagram below into https://mermaid.live and export it as an image for the PDF.
@@ -68,7 +68,7 @@ erDiagram
 ## 7. Architecture and features
 `backend/`: `app.py` (factory, admin seed), `api.py` (controllers), `models.py`, `cache.py`, `celery_app.py` + `tasks.py`, `services.py` (mail, chat webhook, report HTML/PDF). `templates/index.html` is the only template; `static/js/app.js` is the Vue app; `static/sw.js` + manifest give "add to desktop".
 
-Features: all core admin/examiner/student functions; an enforced examination lifecycle (Draft > Slot Creation > Booking Open > Closed > Completed); slot-creation and booking windows enforced by status and dates; clash checks that hold under simultaneous requests; evaluation history and an audit log; weighted rubric scoring; result publishing with email and in-app notification; search and filters; role dashboards; SVG analytics charts; printable scorecard; daily reminder (email + optional Google Chat, time set by `REMINDER_HOUR/MINUTE`); monthly report (HTML email with PDF attached, also downloadable); async CSV export with completion alert.
+Features: all core admin/examiner/student functions; an enforced examination lifecycle (Draft > Slot Creation > Booking Open > Closed > Completed); slot-creation and booking windows enforced by status and dates; clash checks that hold under simultaneous requests; evaluation history and an audit log; weighted rubric scoring; result publishing with email and in-app notification; search and filters; role dashboards; Chart.js analytics charts; printable scorecard; daily reminder (email + optional Google Chat, time set by `REMINDER_HOUR/MINUTE`); monthly report (HTML email with PDF attached, also downloadable); async CSV export with completion alert.
 
 ## 8. Video
 <Google Drive link, access: anyone with the link>

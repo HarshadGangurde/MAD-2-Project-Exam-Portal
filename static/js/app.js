@@ -1,5 +1,4 @@
-const { createApp, reactive, ref, onMounted, onBeforeUnmount, watch, computed } = Vue;
-const { createRouter, createWebHistory } = VueRouter;
+const { createApp, reactive, ref, onMounted, onBeforeUnmount, watch, computed, h, markRaw } = Vue;
 
 /* ---------------- Global State & Helpers ---------------- */
 const state = reactive({
@@ -264,103 +263,54 @@ const ConfirmModal = {
   </div>`,
 };
 
-// Bar / line chart drawn as plain SVG (no charting library). Same props as before: type ('bar' | 'line'), labels, values,
-// title, accentColor. Whole-number axis, hover tooltips (<title>), screen-reader summary, "No data yet" when empty.
+// Bar / line chart drawn with Chart.js (CDN). Props: type ('bar' | 'line'), labels, values, title, accentColor.
+// Whole-number axis, hover tooltips, screen-reader summary, "No data yet" when empty.
 const ChartBox = {
   props: ['type', 'labels', 'values', 'title', 'accentColor'],
   setup(props) {
-    const W = 360, H = 232, L = 34, R = 10, T = 22;          // the SVG scales to its container (viewBox)
+    const canvas = ref(null);
+    let chart = null;
+    const nums = computed(() => (props.values || []).map((v) => Number(v) || 0));
+    const names = computed(() => (props.labels || []).map((x) => String(x)));
     const isLine = computed(() => props.type === 'line');
     const color = computed(() => props.accentColor || '#4f46e5');
-    const nums = computed(() => (props.values || []).map((v) => Number(v) || 0));
-    const names = computed(() => (props.labels || []).map((s) => String(s)));
-    const rotate = computed(() => !isLine.value && nums.value.length > 2);   // long exam names: slanted labels
-    const plot = computed(() => {
-      const bottom = rotate.value ? 64 : 34;                                   // room under the plot for the labels
-      return { x: L, y: T, w: W - L - R, h: H - T - bottom };
-    });
-    const ticks = computed(() => {                                              // round whole numbers, about 4-5 gridlines
-      const max = Math.max(1, ...nums.value);
-      const raw = max / 4, pow = Math.pow(10, Math.floor(Math.log10(raw)));
-      const step = Math.max(1, [1, 2, 5, 10].map((m) => m * pow).find((s) => s >= raw));   // 1, 2, 5, 10, 20, 50, 100 ...
-      const top = step * Math.ceil(max / step);
-      const list = [];
-      for (let v = 0; v <= top; v += step) list.push(v);
-      return { list, top };
-    });
-    const yOf = (v) => plot.value.y + plot.value.h - (v / ticks.value.top) * plot.value.h;
-    const short = (s, n = 14) => (s.length > n ? s.slice(0, n - 1) + '…' : s);
-    const pretty = (s) => {                                                     // 2026-11-08 -> Nov 8
-      const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
-      return m ? new Date(+m[1], +m[2] - 1, +m[3]).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : s;
-    };
-
-    const bars = computed(() => {
-      if (isLine.value || !nums.value.length) return [];
-      const p = plot.value, band = p.w / nums.value.length, w = Math.min(band * 0.62, 46);
-      return nums.value.map((v, i) => {
-        const x = p.x + band * i + (band - w) / 2, y = yOf(v), h = p.y + p.h - y, r = Math.min(5, w / 2, h);
-        return {
-          d: h > 0 ? `M${x},${y + h} L${x},${y + r} Q${x},${y} ${x + r},${y} L${x + w - r},${y} Q${x + w},${y} ${x + w},${y + r} L${x + w},${y + h} Z` : '',
-          cx: x + w / 2, valueY: y - 5, v, text: short(names.value[i] || ''), tip: (names.value[i] || '') + ': ' + v,
-        };
-      });
-    });
-
-    const line = computed(() => {
-      const n = nums.value.length, p = plot.value;
-      if (!isLine.value || !n) return null;
-      const pts = nums.value.map((v, i) => ({
-        x: n === 1 ? p.x + p.w / 2 : p.x + (p.w * i) / (n - 1), y: yOf(v), v,
-        text: pretty(names.value[i] || ''), tip: pretty(names.value[i] || '') + ': ' + v,
-      }));
-      const path = pts.map((q, i) => (i ? 'L' : 'M') + q.x + ',' + q.y).join(' ');
-      const area = n > 1 ? path + ` L${pts[n - 1].x},${p.y + p.h} L${pts[0].x},${p.y + p.h} Z` : '';
-      const every = Math.max(1, Math.ceil(n / 5));                                // about five date labels
-      const shown = new Set();
-      for (let i = 0; i < n; i += every) shown.add(i);
-      const last = Math.max(...shown);                                            // always label the newest point,
-      if (n - 1 - last >= every / 2) shown.add(n - 1);                            // unless it would crowd the previous label
-      else if (last !== n - 1) { shown.delete(last); shown.add(n - 1); }
-      pts.forEach((q, i) => { q.showLabel = shown.has(i); });
-      return { pts, path, area, dots: n <= 31 };
-    });
-
     const summary = computed(() => (props.title || 'Chart') + ': ' + (nums.value.length
       ? nums.value.map((v, i) => (names.value[i] || '') + ' ' + v).join(', ') : 'no data'));
 
-    return { W, H, plot, ticks, yOf, color, isLine, rotate, nums, bars, line, summary };
+    const draw = () => {
+      if (chart) { chart.destroy(); chart = null; }
+      if (!canvas.value || !nums.value.length || typeof Chart === 'undefined') return;
+      chart = new Chart(canvas.value, {
+        type: isLine.value ? 'line' : 'bar',
+        data: {
+          labels: names.value,
+          datasets: [{
+            data: nums.value, borderColor: color.value, borderWidth: 2.5, tension: 0.25,
+            backgroundColor: isLine.value ? color.value + '22' : color.value + 'D0',
+            fill: isLine.value, borderRadius: isLine.value ? 0 : 5, pointRadius: nums.value.length <= 31 ? 3.5 : 0,
+            pointBackgroundColor: '#fff', maxBarThickness: 46,
+          }],
+        },
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          plugins: { legend: { display: false } },
+          scales: {
+            y: { beginAtZero: true, ticks: { precision: 0 }, grid: { color: '#f1f5f9' } },
+            x: { grid: { display: false }, ticks: { maxRotation: 35, autoSkip: true, maxTicksLimit: isLine.value ? 6 : 12 } },
+          },
+        },
+      });
+    };
+    onMounted(draw);
+    watch([nums, names, isLine, color], () => { setTimeout(draw, 0); });   // canvas appears after the data arrives
+    onBeforeUnmount(() => { if (chart) chart.destroy(); });
+    return { canvas, nums, summary };
   },
   template: `
   <div class="chart-box">
     <div class="chart-title">{{ title }}</div>
     <div v-if="!nums.length" class="chart-empty">No data yet</div>
-    <svg v-else class="chart-svg" :viewBox="'0 0 ' + W + ' ' + H" role="img" :aria-label="summary">
-      <g class="chart-grid" aria-hidden="true">
-        <g v-for="t in ticks.list" :key="t">
-          <line :x1="plot.x" :x2="plot.x + plot.w" :y1="yOf(t)" :y2="yOf(t)" />
-          <text :x="plot.x - 6" :y="yOf(t) + 3.5" text-anchor="end">{{ t }}</text>
-        </g>
-      </g>
-
-      <g v-if="!isLine" aria-hidden="true">
-        <g v-for="(b, i) in bars" :key="i" class="chart-bar">
-          <path v-if="b.d" :d="b.d" :fill="color" fill-opacity="0.82"><title>{{ b.tip }}</title></path>
-          <text class="chart-value" :x="b.cx" :y="b.valueY" text-anchor="middle">{{ b.v }}</text>
-          <text v-if="rotate" class="chart-label" text-anchor="end" :transform="'translate(' + (b.cx + 4) + ',' + (plot.y + plot.h + 13) + ') rotate(-32)'">{{ b.text }}</text>
-          <text v-else class="chart-label" text-anchor="middle" :x="b.cx" :y="plot.y + plot.h + 16">{{ b.text }}</text>
-        </g>
-      </g>
-
-      <g v-else-if="line" aria-hidden="true">
-        <path v-if="line.area" :d="line.area" :fill="color" fill-opacity="0.12" />
-        <path v-if="line.pts.length > 1" :d="line.path" fill="none" :stroke="color" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round" />
-        <g v-for="(q, i) in line.pts" :key="i">
-          <circle v-if="line.dots || q.showLabel" :cx="q.x" :cy="q.y" r="3.6" fill="#fff" :stroke="color" stroke-width="2"><title>{{ q.tip }}</title></circle>
-          <text v-if="q.showLabel" class="chart-label" text-anchor="middle" :x="q.x" :y="plot.y + plot.h + 16">{{ q.text }}</text>
-        </g>
-      </g>
-    </svg>
+    <div v-else class="chart-canvas"><canvas ref="canvas" role="img" :aria-label="summary"></canvas></div>
   </div>`,
 };
 
@@ -387,7 +337,7 @@ const pageMeta = {
 const PageHeader = {
   props: ['title', 'subtitle'],
   setup() {
-    const route = VueRouter.useRoute();
+    const route = useRoute();
     return { meta: computed(() => pageMeta[route.path] || {}) };
   },
   template: `
@@ -2682,7 +2632,7 @@ const App = {
       loadNotifications();
     };
 
-    const route = VueRouter.useRoute();
+    const route = useRoute();
     const currentTitle = computed(() => {
       if (!state.user) return 'Examination Management Portal';
       const list = navLinks[state.user.role] || [];
@@ -2838,20 +2788,54 @@ const routes = [
   { path: '/student/bookings', component: StudentBookings, meta: { role: 'student' } },
   { path: '/student/results', component: StudentResults, meta: { role: 'student' } },
   { path: '/profile', component: Profile, meta: { role: ['admin', 'examiner', 'student'] } },
-  { path: '/:pathMatch(.*)*', redirect: '/' },
+  { path: '*', redirect: '/' },
 ];
 
-const router = createRouter({ history: createWebHistory(), routes });
+/* Minimal built-in router (no vue-router): History API + a reactive "route" object. Same guard rules as before. */
+const route = reactive({ path: '/', component: null });
+const useRoute = () => route;
 
-router.beforeEach((to) => {
-  if (to.meta.public) return state.user ? '/' + state.user.role : true;
-  if (!state.user || !token()) return '/login';
-  const need = to.meta.role;
-  if (need && ![].concat(need).includes(state.user.role)) return '/' + state.user.role;
-  return true;
-});
+function resolvePath(path, depth = 0) {
+  const m = routes.find((r) => r.path === path) || routes.find((r) => r.path === '*');
+  if (depth > 5) return { path: '/login', m: routes.find((r) => r.path === '/login') };
+  if (m.redirect) return resolvePath(typeof m.redirect === 'function' ? m.redirect() : m.redirect, depth + 1);
+  const meta = m.meta || {};
+  if (meta.public) return state.user ? resolvePath('/' + state.user.role, depth + 1) : { path, m };
+  if (!state.user || !token()) return resolvePath('/login', depth + 1);
+  if (meta.role && ![].concat(meta.role).includes(state.user.role)) return resolvePath('/' + state.user.role, depth + 1);
+  return { path, m };
+}
 
-const vueApp = createApp(App).use(router);
+const router = {
+  push(path, replace = false) {
+    const r = resolvePath(String(path).split(/[?#]/)[0]);
+    if (location.pathname !== r.path) history[replace ? 'replaceState' : 'pushState']({}, '', r.path);
+    route.path = r.path;
+    route.component = markRaw(r.m.component);
+  },
+};
+window.addEventListener('popstate', () => router.push(location.pathname, true));
+
+const RouterView = { setup: () => () => (route.component ? h(route.component, { key: route.path }) : null) };
+const RouterLink = {
+  props: ['to'],
+  setup(props, { slots }) {
+    return () => h('a', {
+      href: props.to,
+      class: { 'router-link-exact-active': route.path === props.to },
+      onClick(e) {
+        if (e.ctrlKey || e.metaKey || e.shiftKey || e.button) return;
+        e.preventDefault();
+        router.push(props.to);
+      },
+    }, slots.default && slots.default());
+  },
+};
+
+const vueApp = createApp(App);
+vueApp.component('router-view', RouterView);
+vueApp.component('router-link', RouterLink);
 Object.entries({ PageHeader, HeroBanner, LoadingBlock, EmptyRow, FilterBar, StatCard, StatusBadge, SeatMeter })
   .forEach(([name, component]) => vueApp.component(name, component));
+router.push(location.pathname, true);
 vueApp.mount('#app');

@@ -49,6 +49,12 @@ Set `FLASK_DEBUG=1` before `python app.py` only if you want the debugger/auto-re
 and the single admin are created automatically on first start.
 </details>
 
+## E-mail (Gmail)
+Mail settings live in a git-ignored `.env` file next to `run.py` (template: `.env.example`) and are picked up by the API, the
+Celery worker and beat automatically, so `python run.py` is all you start. With `MAIL_USERNAME` / `MAIL_PASSWORD` (a Google app
+password) set, every mail goes out through Gmail and the start-up self-check confirms the login ("e-mail server accepts us").
+Without them, mails go to a local catcher (Mailpit/MailHog on port 1025, inbox at http://localhost:8025) or are only logged.
+
 ## Logins
 On the sign-in page first choose **Admin, Examiner or Student**, then enter email and password. The server checks that
 the account really has the chosen role (a student's password under "Admin" is refused). The last choice is remembered
@@ -84,7 +90,7 @@ Runs against a throwaway database; needs no Redis or Celery worker.
 `ADMIN_EMAIL`, `ADMIN_PASSWORD`, `REDIS_URL`, `CELERY_BROKER_URL`, `CELERY_RESULT_BACKEND`,
 `TIMEZONE` (IANA name used by the Celery schedule, default `Asia/Kolkata`),
 `REMINDER_HOUR` / `REMINDER_MINUTE` (daily reminder time in that timezone, default 08:00), `MAIL_HOST`, `MAIL_PORT`,
-`MAIL_FROM`, `GCHAT_WEBHOOK` (optional Google Chat webhook for reminders), `EMP_ENV` (`production` enforces a
+`MAIL_FROM`, `MAIL_FROM_NAME`, `MAIL_USERNAME`, `MAIL_PASSWORD`, `MAIL_USE_TLS` / `MAIL_USE_SSL` (`1` to enable; for a real server such as Gmail: `MAIL_HOST=smtp.gmail.com MAIL_PORT=587 MAIL_USE_TLS=1` plus an app password), `GCHAT_WEBHOOK` (optional Google Chat webhook for reminders), `EMP_ENV` (`production` enforces a
 non-default admin password), `EMP_DEMO_LOGIN` (`1` shows the demo login buttons), `TRUSTED_PROXIES` (number of reverse
 proxies in front of the app, so that rate limits use the real client address; default 0).
 

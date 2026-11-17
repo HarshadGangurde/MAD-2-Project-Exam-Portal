@@ -170,6 +170,18 @@ def find_redis():
     return None
 
 
+def find_mail_sink():
+    """A local SMTP catcher (Mailpit or MailHog) so the e-mails of the app can be seen at http://localhost:8025."""
+    for name in ("mailpit", "MailHog", "mailhog"):
+        p = shutil.which(name)
+        if p:
+            return p
+    for p in (Path.home() / "mailpit", Path.home() / "go" / "bin" / "MailHog", "/usr/local/bin/mailpit"):
+        if Path(p).exists():
+            return str(p)
+    return None
+
+
 # ------------------------------------------------------------------------------------------------ child processes
 class Service:
     """One child process whose output is relayed to this terminal with a name prefix."""
@@ -216,12 +228,14 @@ class Service:
             say(line, self.name)
 
 
-def stop_all(services, redis_proc):
+def stop_all(services, redis_proc, mail_proc=None):
     for s in reversed(services):
         if s.proc:
             kill_tree(s.proc)
     if redis_proc is not None:
         kill_tree(redis_proc)
+    if mail_proc is not None:
+        kill_tree(mail_proc)
 
 
 # ------------------------------------------------------------------------------------------------ main
@@ -312,6 +326,33 @@ def main():
             say("the Celery worker and beat are off. Install Redis (Windows: Memurai or a redis-server.exe in ~/redis-win,", "redis")
             say("Linux: apt install redis-server, macOS: brew install redis) or set REDIS_SERVER=path, then run again.", "redis")
 
+    # ---- mail catcher (optional): SMTP on 1025, inbox on http://localhost:8025
+    mail_proc, mail_state = None, "off (mails are only logged)"
+    if Config.MAIL_USERNAME:       # a real SMTP account from .env (e.g. Gmail): nothing to start, the self-check logs in
+        mail_state = f"{Config.MAIL_HOST}:{Config.MAIL_PORT} as {Config.MAIL_USERNAME} (from .env)"
+        say(f"E-mail goes out through {Config.MAIL_HOST} as {Config.MAIL_USERNAME} (settings read from .env).", "mail")
+    elif port_open(Config.MAIL_PORT, Config.MAIL_HOST):
+        mail_state = f"SMTP {Config.MAIL_HOST}:{Config.MAIL_PORT}"
+        say(f"A mail server is already listening on {Config.MAIL_HOST}:{Config.MAIL_PORT} - using it.", "mail")
+    elif Config.MAIL_HOST in ("127.0.0.1", "localhost") and not Config.MAIL_USERNAME:
+        exe = find_mail_sink()
+        if exe:
+            say(f"Starting mail catcher: {exe}", "mail")
+            kw = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW} if IS_WIN else {"start_new_session": True}
+            cmd = [exe, "--smtp", f"127.0.0.1:{Config.MAIL_PORT}"] if "ailpit" in exe.lower() else \
+                  [exe, "-smtp-bind-addr", f"127.0.0.1:{Config.MAIL_PORT}"]
+            mail_proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **kw)
+            for _ in range(20):
+                if port_open(Config.MAIL_PORT) or mail_proc.poll() is not None:
+                    break
+                time.sleep(0.25)
+            if port_open(Config.MAIL_PORT):
+                mail_state = f"catcher on SMTP {Config.MAIL_PORT}, inbox http://localhost:8025"
+            else:
+                mail_proc = None
+        else:
+            say("No Mailpit/MailHog found: e-mails are only logged. (Optional: install Mailpit to see them at :8025.)", "mail")
+
     # ---- services
     py = sys.executable
     services = [Service("api", [py, str(BACKEND / "app.py")], str(BACKEND), env, args.verbose)]
@@ -382,6 +423,7 @@ def main():
                 print("    Examiners are created by the admin; students register themselves.")
             parts = ["API+UI"] + (["Redis cache", "Celery worker", "Celery beat"] if redis_up else [])
             print("  Running:  " + ", ".join(parts) + ("" if redis_up else "   (Redis/Celery OFF)"))
+            print("  Mail:     " + mail_state)
             print("  Press Ctrl+C to stop everything.")
             print("=" * 72 + "\n", flush=True)
         if args.open:
@@ -405,7 +447,7 @@ def main():
         say("Stopping ...")
         return 0
     finally:
-        stop_all(services, redis_proc)
+        stop_all(services, redis_proc, mail_proc)
         say("Stopped.")
 
 

@@ -2,7 +2,7 @@
 // It deliberately ignores every cross-origin request (Vue, Bootstrap, fonts from the CDNs): a service worker's
 // fetch() is subject to the page's Content-Security-Policy (connect-src 'self'), so proxying them would break the page.
 // Consequence: offline use shows the cached shell only; the CDN libraries still need a network or the browser cache.
-const CACHE = 'emp-shell-v3';
+const CACHE = 'emp-shell-v5';
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(['/static/js/app.js', '/static/manifest.json'])));
